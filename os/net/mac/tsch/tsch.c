@@ -44,7 +44,10 @@
  * \addtogroup tsch
  * @{
 */
-
+/**
+ * This file has been carefully modified to support the sampling of synchronization time.
+ * Apostolos Karalis <akaralis@unipi.gr>
+ */
 #include "contiki.h"
 #include "dev/radio.h"
 #include "net/netstack.h"
@@ -57,6 +60,12 @@
 #include "net/mac/mac-sequence.h"
 #include "lib/random.h"
 #include "net/routing/routing.h"
+
+#ifdef SYNC_TIME_EXPERIMENT
+#include "helper_functions.h"
+#include "sys/energest.h"
+#include "dev/button-hal.h"
+#endif
 
 #if TSCH_WITH_SIXTOP
 #include "net/mac/tsch/sixtop/sixtop.h"
@@ -572,6 +581,8 @@ tsch_disassociate(void)
     process_poll(&tsch_process);
   }
 }
+
+#if !defined(SYNC_TIME_EXPERIMENT) || NODE_TYPE != SAMPLER
 /*---------------------------------------------------------------------------*/
 /* Attempt to associate to a network form an incoming EB */
 static int
@@ -745,12 +756,94 @@ tsch_associate(const struct input_packet *input_eb, rtimer_clock_t timestamp)
   LOG_ERR("! did not associate.\n");
   return 0;
 }
+
+#else
+/*
+ * This function is a variant of tsch_associate.
+ * It only checks if an EB is valid. Ιf the EB is valid, the parameter asn
+ * becomes equal to the ASN contained in the EB.
+ */
+static int
+is_valid_eb(const struct input_packet *input_eb, struct tsch_asn_t *asn)
+{
+    frame802154_t frame;
+    struct ieee802154_ies ies;
+    uint8_t hdrlen;
+
+    if(input_eb == NULL || tsch_packet_parse_eb(input_eb->payload, input_eb->len,
+                                                &frame, &ies, &hdrlen, 0) == 0) {
+        LOG_DBG("! failed to parse EB (len %u)\n", input_eb->len);
+        return 0;
+    }
+
+    *asn = ies.ie_asn;
+
+#   if TSCH_JOIN_SECURED_ONLY
+    if(frame.fcf.security_enabled == 0) {
+    LOG_ERR("! parse_eb: EB is not secured\n");
+    return 0;
+  }
+#   endif /* TSCH_JOIN_SECURED_ONLY */
+#   if LLSEC802154_ENABLED
+    if(!tsch_security_parse_frame(input_eb->payload, hdrlen,
+      input_eb->len - hdrlen - tsch_security_mic_len(&frame),
+      &frame, (linkaddr_t*)&frame.src_addr, asn)) {
+    LOG_ERR("! parse_eb: failed to authenticate\n");
+    return 0;
+  }
+#   endif /* LLSEC802154_ENABLED */
+
+#   if !LLSEC802154_ENABLED
+    if(frame.fcf.security_enabled == 1) {
+        LOG_ERR("! parse_eb: we do not support security, but EB is secured\n");
+        return 0;
+    }
+#   endif /* !LLSEC802154_ENABLED */
+
+#   if TSCH_JOIN_MY_PANID_ONLY
+    /* Check if the EB comes from the PAN ID we expect */
+  if(frame.src_pid != IEEE802154_PANID) {
+    LOG_ERR("! parse_eb: PAN ID %x != %x\n", frame.src_pid, IEEE802154_PANID);
+    return 0;
+  }
+#   endif /* TSCH_JOIN_MY_PANID_ONLY */
+
+    /* There was no join priority (or 0xff) in the EB, do not join */
+    if(ies.ie_join_priority == 0xff) {
+        LOG_ERR("! parse_eb: no join priority\n");
+        return 0;
+    }
+
+    /* TSCH hopping sequence */
+    if(ies.ie_channel_hopping_sequence_id != 0 && ies.ie_hopping_sequence_len > sizeof(tsch_hopping_sequence)) {
+        LOG_ERR("! parse_eb: hopping sequence too long (%u)\n", ies.ie_hopping_sequence_len);
+        return 0;
+    }
+
+#   if TSCH_INIT_SCHEDULE_FROM_EB
+
+    /* We support only 0 or 1 slotframe in this IE */
+    int num_links = ies.ie_tsch_slotframe_and_link.num_links;
+    if(num_links > FRAME802154E_IE_MAX_LINKS) {
+      LOG_ERR("! parse_eb: too many links in schedule (%u)\n", num_links);
+      return 0;
+    }
+
+#   endif /* TSCH_INIT_SCHEDULE_FROM_EB */
+
+    return 1;
+}
+#endif /* SYNC_TIME_EXPERIMENT && NODE_TYPE != SAMPLER */
+
 /* Processes and protothreads used by TSCH */
 
 /*---------------------------------------------------------------------------*/
 /* Scanning protothread, called by tsch_process:
  * Listen to different channels, and when receiving an EB,
  * attempt to associate.
+ * It is noted that, if SYNC_TIME_EXPERIMENT has been defined and the node is a SAMPLER then it does not attempt to
+ * associate after the reception of an EB, but attempts to find a new EB, until it totally receives NUM_SAMPLES EBs
+ * for each of the specified scan periods.
  */
 PT_THREAD(tsch_scan(struct pt *pt))
 {
@@ -760,11 +853,36 @@ PT_THREAD(tsch_scan(struct pt *pt))
   static struct etimer scan_timer;
   /* Time when we started scanning on current_channel */
   static clock_time_t current_channel_since;
+  static int scan_timer_flag;
+
+# if defined(SYNC_TIME_EXPERIMENT) && NODE_TYPE == SAMPLER
+  static rtimer_clock_t sync_attempt_start;
+  static struct etimer delay_timer;
+  static unsigned long samples_counter;
+  static double scan_period;
+  static int scan_period_idx;
+  static uint64_t start_energest_cpu, start_energest_lpm, start_energest_dlpm;
+# else
+  static double scan_period;
+  scan_period = TSCH_CHANNEL_SCAN_DURATION;
+# endif
 
   TSCH_ASN_INIT(tsch_current_asn, 0, 0);
 
   etimer_set(&scan_timer, CLOCK_SECOND / TSCH_ASSOCIATION_POLL_FREQUENCY);
   current_channel_since = clock_time();
+  scan_timer_flag = 0;
+# if defined(SYNC_TIME_EXPERIMENT) && NODE_TYPE == SAMPLER
+  sampling_started();
+  sync_attempt_start = RTIMER_NOW();
+  samples_counter = 0;
+  {scan_period = SCAN_PERIODS[0] * SLOTFRAME_DURATION_CS;}  // the current scan period in clock seconds/ticks
+  scan_period_idx = 0;
+  energest_flush();
+  start_energest_cpu = energest_type_time(ENERGEST_TYPE_CPU);
+  start_energest_lpm = energest_type_time(ENERGEST_TYPE_LPM);
+  start_energest_dlpm = energest_type_time(ENERGEST_TYPE_DEEP_LPM);
+# endif
 
   while(!tsch_is_associated && !tsch_is_coordinator) {
     /* Hop to any channel offset */
@@ -776,7 +894,7 @@ PT_THREAD(tsch_scan(struct pt *pt))
     clock_time_t now_time = clock_time();
 
     /* Switch to a (new) channel for scanning */
-    if(current_channel == 0 || now_time - current_channel_since > TSCH_CHANNEL_SCAN_DURATION) {
+    if(current_channel == 0 || now_time - current_channel_since > scan_period) {
       /* Pick a channel at random in TSCH_JOIN_HOPPING_SEQUENCE */
       uint8_t scan_channel = TSCH_JOIN_HOPPING_SEQUENCE[
           random_rand() % sizeof(TSCH_JOIN_HOPPING_SEQUENCE)];
@@ -784,12 +902,28 @@ PT_THREAD(tsch_scan(struct pt *pt))
       NETSTACK_RADIO.set_value(RADIO_PARAM_CHANNEL, scan_channel);
       current_channel = scan_channel;
       LOG_INFO("scanning on channel %u\n", scan_channel);
-
       current_channel_since = now_time;
+
+# if defined(SYNC_TIME_EXPERIMENT) && NODE_TYPE == SAMPLER
+      record_channel_selection(current_channel);
+# endif
+
     }
 
     /* Turn radio on and wait for EB */
     NETSTACK_RADIO.on();
+
+      ////////////////////////////
+      // This code segment replaces the code that has been commented out at the end of the loop, which
+      // leads to a dead scan time interval at the end of a scan period.
+
+      if(scan_timer_flag){
+          etimer_reset(&scan_timer);
+          PT_WAIT_UNTIL(pt, etimer_expired(&scan_timer));
+      } else { // this is the first execution of the loop... don't wait scan_timer
+          scan_timer_flag = 1;
+      }
+      ///////////////////////////
 
     is_packet_pending = NETSTACK_RADIO.pending_packet();
     if(!is_packet_pending && NETSTACK_RADIO.receiving_packet()) {
@@ -813,7 +947,68 @@ PT_THREAD(tsch_scan(struct pt *pt))
 
         /* Sanity-check the timestamp */
         if(ABS(RTIMER_CLOCK_DIFF(t0, t1)) < 2ul * RTIMER_SECOND) {
-          tsch_associate(&input_eb, t0);
+#       if !defined(SYNC_TIME_EXPERIMENT) || NODE_TYPE != SAMPLER
+            tsch_associate(&input_eb, t0);
+#       else
+            struct tsch_asn_t eb_asn;
+            if(is_valid_eb(&input_eb, &eb_asn)){
+                NETSTACK_RADIO.off(); // scanning finished - close the radio
+                rtimer_clock_t sync_end_time = RTIMER_NOW();
+                double sync_time =  (double) (sync_end_time - sync_attempt_start) / RTIMER_SECOND;
+                energest_flush();
+                double cpu_active_time =
+                        (double) (energest_type_time(ENERGEST_TYPE_CPU) - start_energest_cpu) / ENERGEST_SECOND;
+
+                double lpm_time =
+                        (double) (energest_type_time(ENERGEST_TYPE_LPM) - start_energest_lpm) / ENERGEST_SECOND;
+
+                double dlpm_time =
+                         (double) (energest_type_time(ENERGEST_TYPE_DEEP_LPM) - start_energest_dlpm) / ENERGEST_SECOND;
+
+                LOG_INFO("A valid EB was received! \n");
+
+                double time_elapsed_since_reception_slot_start = (double)(sync_end_time - (t0 - tsch_timing[tsch_ts_tx_offset]))/RTIMER_SECOND;
+                if(!record_sync_sample(
+                        scan_period / SLOTFRAME_DURATION_CS,
+                        sync_time,
+                        cpu_active_time,
+                        lpm_time,
+                        dlpm_time,
+                        (((uint64_t) eb_asn.ms1b) << 32) + eb_asn.ls4b,
+                        time_elapsed_since_reception_slot_start)
+                        ){
+                    // Unable to save the sample
+                    break; // The sampling is terminated
+                }
+
+                samples_counter++;
+
+                if(samples_counter == NUM_SAMPLES){
+                    scan_period_idx +=1;
+
+                    if(scan_period_idx == NUM_SCAN_PERIODS){
+                        sampling_completed();
+                        break;
+                    }
+
+                    scan_period = SCAN_PERIODS[scan_period_idx] * SLOTFRAME_DURATION_CS;
+                    samples_counter = 0;
+                }
+
+                // set a random delay until the start of the next synchronization attempt
+                clock_time_t delay = random_rand() % SLOTFRAME_DURATION_CS; //considering RANDOM_RAND_MAX >= SLOTFRAME_DURATION_CS
+                etimer_set(&delay_timer, delay);
+                PT_WAIT_UNTIL(pt, etimer_expired(&delay_timer));
+                current_channel = 0;
+                scan_timer_flag = 0;
+                sync_attempt_start = RTIMER_NOW();
+                energest_flush();
+                start_energest_cpu = energest_type_time(ENERGEST_TYPE_CPU);
+                start_energest_lpm = energest_type_time(ENERGEST_TYPE_LPM);
+                start_energest_dlpm = energest_type_time(ENERGEST_TYPE_DEEP_LPM);
+                continue;
+            }
+#       endif /* SYNC_TIME_EXPERIMENT */
         } else {
           LOG_WARN("scan: dropping packet, timestamp too far from current time %u %u\n",
             (unsigned)t0,
@@ -826,11 +1021,19 @@ PT_THREAD(tsch_scan(struct pt *pt))
     if(tsch_is_associated) {
       /* End of association, turn the radio off */
       NETSTACK_RADIO.off();
-    } else if(!tsch_is_coordinator) {
-      /* Go back to scanning */
-      etimer_reset(&scan_timer);
-      PT_WAIT_UNTIL(pt, etimer_expired(&scan_timer));
     }
+//   Warning!!!
+//   This code introduces a dead scan time at the end of a scan period. Specifically, when this code runs for the last
+//   time at the end of a scan period, which means that a new channel will be selected in the next repetition of the loop,
+//   the waiting time until the expiration of the scan_timer is a dead interval. It is a dead interval because any EB that
+//   may arrive will be ignored since no check will be done, but a new scan channel will be selected immediately. Even if
+//   the dead scan time is relatively small (e.g. a few milliseconds), it has a considerable negative impact when the
+//   scan period is small (e.g. 50ms). We have confirmed this problem through experiments.
+//    else if(!tsch_is_coordinator) {
+//      /* Go back to scanning */
+//      etimer_reset(&scan_timer);
+//      PT_WAIT_UNTIL(pt, etimer_expired(&scan_timer));
+//    }
   }
 
   PT_END(pt);
@@ -844,7 +1047,30 @@ PROCESS_THREAD(tsch_process, ev, data)
 
   PROCESS_BEGIN();
 
+# if defined(SYNC_TIME_EXPERIMENT) && STORING_STATS_IN_SD
+  if(!prepare_sd()){
+      PROCESS_EXIT();
+  }
+# endif
+
   while(1) {
+# if defined(SYNC_TIME_EXPERIMENT) && NODE_TYPE == SAMPLER
+    /* Pause the current process for a short while in order to let the initialization code of Contiki to be run.
+     * We made this for to avoid the cpu time of the initialization code to be included in the samples.
+     */
+    PROCESS_PAUSE();
+
+#   if START_SAMPLING_WITH_USER_BUTTON
+    // In this case, the sampling process does not start automatically, but requires the pressing of the user button
+    PROCESS_WAIT_EVENT_UNTIL(ev == button_hal_press_event);
+#   endif /* START_SAMPLING_WITH_USER_BUTTON */
+
+   /* Start the sampling. The sampling procedure has been integrated in the scanning procedure (see the PT_THREAD named
+    * tsch_scan)
+    */
+    PROCESS_PT_SPAWN(&scan_pt, tsch_scan(&scan_pt));
+    break;
+# endif
 
     while(!tsch_is_associated) {
       if(tsch_is_coordinator) {
@@ -878,26 +1104,28 @@ PROCESS_THREAD(tsch_process, ev, data)
 PROCESS_THREAD(tsch_send_eb_process, ev, data)
 {
   static struct etimer eb_timer;
+  static double p_send = -1;
 
   PROCESS_BEGIN();
 
   /* Wait until association */
-  etimer_set(&eb_timer, CLOCK_SECOND / 10);
   while(!tsch_is_associated) {
-    PROCESS_WAIT_UNTIL(etimer_expired(&eb_timer));
-    etimer_reset(&eb_timer);
-  }
-
-  /* Set an initial delay except for coordinator, which should send an EB asap */
-  if(!tsch_is_coordinator) {
-    etimer_set(&eb_timer, TSCH_EB_PERIOD ? random_rand() % TSCH_EB_PERIOD : 0);
+    etimer_set(&eb_timer, CLOCK_SECOND / 10);
     PROCESS_WAIT_UNTIL(etimer_expired(&eb_timer));
   }
 
   while(1) {
-    unsigned long delay;
 
-    if(tsch_is_associated && tsch_current_eb_period > 0
+    if(tsch_current_eb_period == 0){
+        p_send = 0;
+    } else if((p_send == -1 && tsch_is_coordinator) || SLOTFRAME_DURATION_CS > tsch_current_eb_period){
+        // Note that if the node is the pan coordinator, it immediately sends an EB the first time
+        p_send = 1;
+    } else {
+        p_send = (double) SLOTFRAME_DURATION_CS / tsch_current_eb_period;
+    }
+
+    if(tsch_is_associated && p_send > 0
 #ifdef TSCH_RPL_CHECK_DODAG_JOINED
       /* Implementation section 6.3 of RFC 8180 */
       && TSCH_RPL_CHECK_DODAG_JOINED()
@@ -905,8 +1133,14 @@ PROCESS_THREAD(tsch_send_eb_process, ev, data)
       /* don't send when in leaf mode */
       && !NETSTACK_ROUTING.is_in_leaf_mode()
         ) {
-      /* Enqueue EB only if there isn't already one in queue */
-      if(tsch_queue_packet_count(&tsch_eb_address) == 0) {
+
+#     if defined(SYNC_TIME_EXPERIMENT) && NODE_TYPE != SAMPLER
+      if(node_state != ADVERTISING_STARTED){ // check the last state
+          advertising_started();
+       }
+#     endif
+
+      if((double) random_rand() / RANDOM_RAND_MAX <= p_send) {
         uint8_t hdr_len = 0;
         uint8_t tsch_sync_ie_offset;
         /* Prepare the EB packet and schedule it to be sent */
@@ -920,23 +1154,109 @@ PROCESS_THREAD(tsch_send_eb_process, ev, data)
                        packetbuf_totlen(), packetbuf_hdrlen());
             p->tsch_sync_ie_offset = tsch_sync_ie_offset;
             p->header_len = hdr_len;
+
+            PROCESS_YIELD_UNTIL(ev == PROCESS_EVENT_POLL); // A PROCESS_EVENT_POLL event will be created when the EB is removed from the queue
           }
         }
-      }
-    }
-    if(tsch_current_eb_period > 0) {
-      /* Next EB transmission with a random delay
-       * within [tsch_current_eb_period*0.75, tsch_current_eb_period[ */
-      delay = (tsch_current_eb_period - tsch_current_eb_period / 4)
-        + random_rand() % (tsch_current_eb_period / 4);
+      } else {
+        etimer_set(&eb_timer, (tsch_current_eb_period >= SLOTFRAME_DURATION_CS) ? SLOTFRAME_DURATION_CS : tsch_current_eb_period);
+        PROCESS_WAIT_UNTIL(etimer_expired(&eb_timer));
+        }
     } else {
-      delay = TSCH_EB_PERIOD;
+
+#           if defined(SYNC_TIME_EXPERIMENT) && NODE_TYPE != SAMPLER
+            if(node_state == ADVERTISING_STARTED){ // check the last state
+                advertising_stopped();
+            }
+#            endif
+
+        etimer_set(&eb_timer, CLOCK_SECOND / 10);
+        PROCESS_WAIT_UNTIL(etimer_expired(&eb_timer));
     }
-    etimer_set(&eb_timer, delay);
-    PROCESS_WAIT_UNTIL(etimer_expired(&eb_timer));
   }
   PROCESS_END();
 }
+
+//PROCESS_THREAD(tsch_send_eb_process, ev, data)
+//{
+//  static struct etimer eb_timer;
+//
+//  PROCESS_BEGIN();
+//
+//  /* Wait until association */
+//  etimer_set(&eb_timer, CLOCK_SECOND / 10);
+//  while(!tsch_is_associated) {
+//    PROCESS_WAIT_UNTIL(etimer_expired(&eb_timer));
+//    etimer_reset(&eb_timer);
+//  }
+//
+//  /* Set an initial delay except for coordinator, which should send an EB asap */
+//  if(!tsch_is_coordinator) {
+//    etimer_set(&eb_timer, TSCH_EB_PERIOD ? random_rand() % TSCH_EB_PERIOD : 0);
+//    PROCESS_WAIT_UNTIL(etimer_expired(&eb_timer));
+//  }
+//
+//  while(1) {
+//    unsigned long delay;
+//
+//    if(tsch_is_associated && tsch_current_eb_period > 0
+//#ifdef TSCH_RPL_CHECK_DODAG_JOINED
+//      /* Implementation section 6.3 of RFC 8180 */
+//      && TSCH_RPL_CHECK_DODAG_JOINED()
+//#endif /* TSCH_RPL_CHECK_DODAG_JOINED */
+//      /* don't send when in leaf mode */
+//      && !NETSTACK_ROUTING.is_in_leaf_mode()
+//        ) {
+//
+//#       if defined(SYNC_TIME_EXPERIMENT) && NODE_TYPE != SAMPLER
+//        if(node_state != ADVERTISING_STARTED){ // check the last state
+//            advertising_started();
+//        }
+//#       endif
+//
+//      /* Enqueue EB only if there isn't already one in queue */
+//      if(tsch_queue_packet_count(&tsch_eb_address) < 5) {
+//        uint8_t hdr_len = 0;
+//        uint8_t tsch_sync_ie_offset;
+//        /* Prepare the EB packet and schedule it to be sent */
+//        if(tsch_packet_create_eb(&hdr_len, &tsch_sync_ie_offset) > 0) {
+//          struct tsch_packet *p;
+//          /* Enqueue EB packet, for a single transmission only */
+//          if(!(p = tsch_queue_add_packet(&tsch_eb_address, 1, NULL, NULL))) {
+//            LOG_ERR("! could not enqueue EB packet\n");
+//          } else {
+//              LOG_INFO("TSCH: enqueue EB packet %u %u\n",
+//                       packetbuf_totlen(), packetbuf_hdrlen());
+//            p->tsch_sync_ie_offset = tsch_sync_ie_offset;
+//            p->header_len = hdr_len;
+//
+//          }
+//        }
+//      } else {
+//          printf("Error \n");
+//      }
+//    }
+//#    if defined(SYNC_TIME_EXPERIMENT) && NODE_TYPE != SAMPLER
+//    else if(node_state == ADVERTISING_STARTED){ // check the last state
+//        advertising_stopped();
+//    }
+//#   endif
+//
+//    if(tsch_current_eb_period > 0) {
+//      /* Next EB transmission with a random delay
+//       * within [tsch_current_eb_period*0.75, tsch_current_eb_period[ */
+////      delay = (tsch_current_eb_period - tsch_current_eb_period / 4)
+////        + random_rand() % (tsch_current_eb_period / 4);
+////      delay = (2 * tsch_current_eb_period) * ((double) random_rand() / RANDOM_RAND_MAX);
+//        delay = random_rand() % (2 * tsch_current_eb_period);
+//    } else {
+//      delay = TSCH_EB_PERIOD;
+//    }
+//    etimer_set(&eb_timer, delay);
+//    PROCESS_WAIT_UNTIL(etimer_expired(&eb_timer));
+//  }
+//  PROCESS_END();
+//}
 
 /*---------------------------------------------------------------------------*/
 /* A process that is polled from interrupt and calls tx/rx input
@@ -1181,8 +1501,9 @@ turn_on(void)
     tsch_is_started = 1;
     /* Process tx/rx callback and log messages whenever polled */
     process_start(&tsch_pending_events_process, NULL);
-    /* periodically send TSCH EBs */
+      /* periodically send TSCH EBs */
     process_start(&tsch_send_eb_process, NULL);
+
     /* try to associate to a network or start one if setup as coordinator */
     process_start(&tsch_process, NULL);
     LOG_INFO("starting as %s\n", tsch_is_coordinator ? "coordinator": "node");

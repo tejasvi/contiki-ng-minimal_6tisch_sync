@@ -135,6 +135,11 @@ tsch_rpl_callback_parent_switch(rpl_parent_t *old, rpl_parent_t *new)
       (const linkaddr_t *)uip_ds6_nbr_lladdr_from_ipaddr(
         rpl_parent_get_ipaddr(new)));
   }
+
+  if(new == NULL){
+      tsch_queue_update_time_source(NULL);
+  }
+
 }
 /*---------------------------------------------------------------------------*/
 /* Check RPL has joined DODAG.

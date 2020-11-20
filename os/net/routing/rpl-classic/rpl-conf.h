@@ -94,7 +94,7 @@
 /*
  * The objective function (OF) used by a RPL root is configurable through
  * the RPL_CONF_OF_OCP parameter. This is defined as the objective code
- * point (OCP) of the OF, RPL_OCP_OF0 or RPL_OCP_MRHOF. This flag is of
+ * point (OCP) of the OF, RPL_OCP_OF0 or RPL_OCP_OF0. This flag is of
  * no relevance to non-root nodes, which run the OF advertised in the
  * instance they join.
  * Make sure the selected of is inRPL_SUPPORTED_OFS.

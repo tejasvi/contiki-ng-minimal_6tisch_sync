@@ -305,6 +305,11 @@ tsch_queue_remove_packet_from_queue(struct tsch_neighbor *n)
       /* Get and remove packet from ringbuf (remove committed through an atomic operation */
       int16_t get_index = ringbufindex_get(&n->tx_ringbuf);
       if(get_index != -1) {
+
+          if(n == n_eb){
+              process_poll(&tsch_send_eb_process);
+          }
+
         return n->tx_array[get_index];
       } else {
         return NULL;

@@ -55,6 +55,11 @@
 #include "sys/critical.h"
 
 #include "sys/log.h"
+
+#ifdef SYNC_TIME_EXPERIMENT
+#include "helper_functions.h"
+#endif
+
 /* TSCH debug macros, i.e. to set LEDs or GPIOs on various TSCH
  * timeslot events */
 #ifndef TSCH_DEBUG_INIT
@@ -684,6 +689,11 @@ PT_THREAD(tsch_tx_slot(struct pt *pt, struct rtimer *t))
       }
     }
 
+#   if defined(SYNC_TIME_EXPERIMENT) && NODE_TYPE != SAMPLER
+    if(current_neighbor == n_eb && mac_tx_status == MAC_TX_OK){
+        record_eb_transmission((((uint64_t) tsch_current_asn.ms1b) << 32) + tsch_current_asn.ls4b, tsch_current_channel);
+    }
+#   endif
     tsch_radio_off(TSCH_RADIO_CMD_OFF_END_OF_TIMESLOT);
 
     current_packet->transmissions++;
