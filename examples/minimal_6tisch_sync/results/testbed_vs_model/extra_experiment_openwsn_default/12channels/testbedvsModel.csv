@@ -1,0 +1,2 @@
+slots,scanPeriod (in slotframes),b_avg,SD,modelAvgSyncTime (s),testbedAvgSyncTime (s),testbedCIL,testbedCIU,diffInAvgSyncTime (%), maxDiffInCDF (%)
+101,1.5876,0.586166,0.0269748,19.7965,19.9361,19.4218,20.4703,0.704962,1.09202
