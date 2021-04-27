@@ -1,4 +1,4 @@
-#About this repository
+# About this repository
 This repository contains the code used for the experiments of the paper:
 ```
 A. Karalis, D. Zorbas and C. Douligeris, "Optimal Initial Synchronization Time in the Minimal 6TiSCH Configuration" in 
