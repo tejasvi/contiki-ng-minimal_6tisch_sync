@@ -1,3 +1,17 @@
+#About this repository
+This repository contains the code used for the experiments of the paper:
+```
+A. Karalis, D. Zorbas and C. Douligeris, "Optimal Initial Synchronization Time in the Minimal 6TiSCH Configuration" in 
+IEEE Access.
+```
+
+Since the experiments were run using the operating system [Contiki-NG](https://www.google.com/url?sa=t&rct=j&q=&esrc=s&source=web&cd=&cad=rja&uact=8&ved=2ahUKEwjS3eL74pHtAhWEGuwKHXuoApIQFjAAegQIAhAC&url=https%3A%2F%2Fgithub.com%2Fcontiki-ng%2Fcontiki-ng&usg=AOvVaw0Sog-YZjOlUdSNxURbnU2K),
+the core of the code is Contiki-NG. For the additional code of our experiments we created a subfolder named [`minimal_6tisch_sync`](https://github.com/akaralis/contiki-ng-minimal_6tisch_sync/tree/minimal_6tisch_sync/examples/minimal_6tisch_sync) 
+in the folder [`examples`](https://github.com/akaralis/contiki-ng-minimal_6tisch_sync/tree/minimal_6tisch_sync/examples) of the Contiki-NG's source code tree. For more information about the experiments see at the [README](https://github.com/akaralis/contiki-ng-minimal_6tisch_sync/tree/minimal_6tisch_sync/examples/README.md)
+file contained in
+this subfolder.
+
+<!----
 <img src="https://github.com/contiki-ng/contiki-ng.github.io/blob/master/images/logo/Contiki_logo_2RGB.png" alt="Logo" width="256">
 
 # Contiki-NG: The OS for Next Generation IoT Devices
@@ -30,3 +44,4 @@ Engage with the community:
 
 * Gitter: https://gitter.im/contiki-ng
 * Twitter: https://twitter.com/contiki_ng
+---->
