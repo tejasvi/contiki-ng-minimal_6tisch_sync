@@ -111,7 +111,7 @@ record_sync_sample(double scan_period, double sync_time, double cpu_active_time,
 
     number_as_string scan_period_as_string, sync_time_as_string, cpu_time_as_string, lpm_time_as_string, dlpm_time_as_string, time_elapsed_since_reception_slot_start_as_string;
     char asn_as_string[21];
-    snprintf(asn_as_string, 21, "%llu", asn);
+    snprintf(asn_as_string, 21, "%llu", (unsigned long long) asn);
 
     if (
 #   if STORING_STATS_IN_SD

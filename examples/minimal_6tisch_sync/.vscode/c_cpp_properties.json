@@ -1,0 +1,27 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "/home/tsinghto/contiki-ng-minimal_6tisch_sync",
+                "/home/tsinghto/contiki-ng-minimal_6tisch_sync/os",
+                "/home/tsinghto/contiki-ng-minimal_6tisch_sync/arch/platform/cooja",
+                "/home/tsinghto/contiki-ng-minimal_6tisch_sync/arch/cpu/cc2538",
+                "/home/tsinghto/contiki-ng-minimal_6tisch_sync/arch/cpu/arm/cortex-m/CMSIS",
+                "/home/tsinghto/contiki-ng-minimal_6tisch_sync/arch/platform/zoul/fs/fat",
+                "/home/tsinghto/contiki-ng-minimal_6tisch_sync/os/lib"
+            ],
+            "forcedInclude": [
+                "/home/tsinghto/contiki-ng-minimal_6tisch_sync/arch/platform/zoul/firefly/board.h"
+                ],
+            "defines": [
+            ],
+            "compilerPath": "/usr/bin/gcc",
+            "cStandard": "gnu17",
+            "cppStandard": "gnu++14",
+            "intelliSenseMode": "linux-gcc-x64"
+        }
+    ],
+    "version": 4
+}

@@ -6,6 +6,30 @@
 
 #include <stdint.h>
 #include "project-conf.h"
+#ifndef PAN_COORDINATOR
+#define PAN_COORDINATOR   0
+#endif
+#ifndef ADVERTISER
+#define ADVERTISER   1
+#endif
+#ifndef SAMPLER
+#define SAMPLER   2
+#endif
+#ifndef NODE_TYPE
+#define NODE_TYPE   PAN_COORDINATOR
+#endif
+#ifndef IEEE_ADDR_NODE_ID
+#define IEEE_ADDR_NODE_ID    1
+#endif
+#ifndef LEDS_CONF_BLUE
+#define LEDS_CONF_BLUE    4
+#endif
+#ifndef LEDS_CONF_GREEN
+#define LEDS_CONF_GREEN    4
+#endif
+#ifndef STORING_STATS_IN_SD
+#define STORING_STATS_IN_SD    0
+#endif
 
 extern int stats_recording_terminated;
 typedef enum {

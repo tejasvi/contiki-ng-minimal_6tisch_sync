@@ -12,7 +12,7 @@
 #define START_SAMPLING_WITH_USER_BUTTON 1
 
 /* Define if the statistics will be saved in the sd card or will be printed to the console */
-#define STORING_STATS_IN_SD 1
+#define STORING_STATS_IN_SD 0
 
 // the total number of channels available to the network
 #define NUM_CHANNELS 16
@@ -28,7 +28,7 @@
 
     /* Specify the values of scan period for which samples will be collected. The values are expressed in slotframes. */
     #define SCAN_PERIODS (double[]){0.5, 2, 3.5, 5, 6.5, 8, 9.5, 11, 12.5, 14, 15.5, 16, 17, 18.5, 20, \
-                                     (double) (CLOCK_SECOND) / SLOTFRAME_DURATION_CS  /* Contiki's Generic Default Scan Period */ \
+                                     (double) (CLOCK_SECOND) / SLOTFRAME_DURATION_CS,  /* Contiki's Generic Default Scan Period */ \
                                      (double) (1.6 * CLOCK_SECOND) / SLOTFRAME_DURATION_CS /* OpenWSN Generic Default Scan Period */ \
                                      }
 
